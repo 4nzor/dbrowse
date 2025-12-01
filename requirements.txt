@@ -1,0 +1,8 @@
+prompt_toolkit==3.0.48
+psycopg2-binary==2.9.10
+pymysql==1.1.0
+pymongo==4.6.1
+clickhouse-driver==0.2.7
+python-dotenv==1.0.1
+termtables==0.2.4
+pyperclip==1.8.2

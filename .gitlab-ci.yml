@@ -1,0 +1,41 @@
+# GitLab CI/CD configuration for dbrowse
+
+stages:
+  - lint
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+    - venv/
+
+before_script:
+  - python --version
+  - pip install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+  - pip install -r requirements.txt
+
+lint:
+  stage: lint
+  script:
+    - echo "Linting code..."
+    # Add linting tools here when available
+    - python -m py_compile main.py database.py ui.py utils.py
+  only:
+    - merge_requests
+    - main
+
+test:
+  stage: test
+  script:
+    - echo "Running tests..."
+    # Add tests here when available
+    - python -c "import main; import database; import ui; import utils; print('All modules import successfully')"
+  only:
+    - merge_requests
+    - main
+

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbrowse"
+version = "0.1.0"
+description = "Terminal-based database management utility (TUI) for multiple database types"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "dbrowse contributors"}
+]
+keywords = ["database", "tui", "postgresql", "mysql", "sqlite", "mongodb", "clickhouse", "terminal", "dbrowse", "lazydocker", "lazygit"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "prompt_toolkit>=3.0.48",
+    "psycopg2-binary>=2.9.10",
+    "pymysql>=1.1.0",
+    "pymongo>=4.6.1",
+    "clickhouse-driver>=0.2.7",
+    "python-dotenv>=1.0.1",
+    "termtables>=0.2.4",
+    "pyperclip>=1.8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+
+[project.scripts]
+dbrowse = "main:main"
+
+[project.urls]
+Homepage = "https://gitlab.com/yourusername/dbrowse"
+Repository = "https://gitlab.com/yourusername/dbrowse"
+Issues = "https://gitlab.com/yourusername/dbrowse/-/issues"
+
+[tool.setuptools]
+packages = ["."]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+
