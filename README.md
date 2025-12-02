@@ -2,7 +2,7 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/4nzor/dbrowse)
+[![Version](https://img.shields.io/badge/version-0.1.12-green.svg)](https://github.com/4nzor/dbrowse)
 [![GitHub stars](https://img.shields.io/github/stars/4nzor/dbrowse?style=social)](https://github.com/4nzor/dbrowse)
 
 **dbrowse** is a terminal-based database management utility (TUI) for Python, providing a lightweight alternative to GUI database tools like pgAdmin. It supports multiple database types and offers an intuitive interface for browsing databases, tables, and data.

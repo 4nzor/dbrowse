@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-CURRENT_VERSION = "0.1.0"
+CURRENT_VERSION = "0.1.12"
 GITHUB_REPO = "4nzor/dbrowse"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -71,12 +71,23 @@ def update_via_pip() -> bool:
     """Update dbrowse using pip."""
     try:
         print("Updating dbrowse...")
+        # Try to update from GitHub if installed from git, otherwise from PyPI
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "dbrowse"],
+            [sys.executable, "-m", "pip", "install", "--upgrade", f"git+https://github.com/{GITHUB_REPO}.git"],
             capture_output=True,
             text=True,
             timeout=60
         )
+        
+        # If git install fails, try PyPI
+        if result.returncode != 0:
+            print("Trying PyPI...")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "dbrowse"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
         
         if result.returncode == 0:
             print("✅ dbrowse updated successfully!")
