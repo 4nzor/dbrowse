@@ -586,23 +586,23 @@ def ask_connection_config() -> ConnectionConfig:
     from utils import print_header, input_with_default, IntValidator
     from prompt_toolkit.completion import WordCompleter
 
-    print_header("Настройка подключения к БД")
+    print_header("Database Connection Setup")
 
     cfg_env = configure_connection_from_env()
     if cfg_env:
-        print("Обнаружена переменная окружения DATABASE_URL, значения будут использованы по умолчанию.")
+        print("DATABASE_URL environment variable detected, values will be used as defaults.")
 
     base = cfg_env or ConnectionConfig()
 
-    name = input_with_default("Название подключения", base.name)
+    name = input_with_default("Connection name", base.name)
     
     db_type_completer = WordCompleter(["postgres", "mysql", "sqlite", "mongodb", "clickhouse"], ignore_case=True)
-    db_type = input_with_default("Тип БД (postgres/mysql/sqlite/mongodb/clickhouse)", base.db_type, completer=db_type_completer).lower()
+    db_type = input_with_default("Database type (postgres/mysql/sqlite/mongodb/clickhouse)", base.db_type, completer=db_type_completer).lower()
     if db_type not in ("postgres", "mysql", "sqlite", "mongodb", "clickhouse"):
         db_type = "postgres"
     
     if db_type == "sqlite":
-        dbname = input_with_default("Путь к файлу БД", base.dbname)
+        dbname = input_with_default("Database file path", base.dbname)
         return ConnectionConfig(
             name=name,
             db_type=db_type,
@@ -635,12 +635,12 @@ def connect(cfg: ConnectionConfig) -> Any:
     
     adapter = get_adapter(cfg.db_type)
     if cfg.db_type == "sqlite":
-        push_status(f"Подключение к {cfg.name} ({cfg.dbname})...")
+        push_status(f"Connecting to {cfg.name} ({cfg.dbname})...")
     elif cfg.db_type == "mongodb":
-        push_status(f"Подключение к {cfg.name} (mongodb://{cfg.host}:{cfg.port}/{cfg.dbname})...")
+        push_status(f"Connecting to {cfg.name} (mongodb://{cfg.host}:{cfg.port}/{cfg.dbname})...")
     else:
-        push_status(f"Подключение к {cfg.name} ({cfg.user}@{cfg.host})...")
+        push_status(f"Connecting to {cfg.name} ({cfg.user}@{cfg.host})...")
     conn = adapter.connect(cfg)
-    push_status(f"Успешное подключение к {cfg.name}.")
+    push_status(f"Successfully connected to {cfg.name}.")
     return conn
 

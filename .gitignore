@@ -48,6 +48,19 @@ venv.bak/
 *.json
 !package.json
 !requirements.txt
+# But keep example screenshots
+!docs/screenshots/*.png
+!docs/screenshots/*.jpg
+
+# Test database
+test_database.db
+*.db
+!docs/**/*.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
 
 # Configuration (user-specific)
 .config/
@@ -66,4 +79,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local documentation (not for git)
+.local-docs/
 

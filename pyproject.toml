@@ -48,6 +48,9 @@ dev = [
 
 [project.scripts]
 dbrowse = "main:main"
+dbrowser = "main:main"  # Alias for convenience
+
+# Note: --update flag is handled in main.py
 
 [project.urls]
 Homepage = "https://gitlab.com/yourusername/dbrowse"
@@ -55,7 +58,9 @@ Repository = "https://gitlab.com/yourusername/dbrowse"
 Issues = "https://gitlab.com/yourusername/dbrowse/-/issues"
 
 [tool.setuptools]
-packages = ["."]
+# Modules are in root directory, map root as package
+package-dir = {"" = "."}
+py-modules = ["main", "database", "ui", "utils", "update_checker"]
 
 [tool.black]
 line-length = 100

@@ -4,13 +4,14 @@ Thank you for your interest in contributing to dbrowse! This document provides g
 
 ## Getting Started
 
-1. Fork the repository on GitLab
-2. Clone your fork: `git clone https://gitlab.com/yourusername/dbrowse.git`
-3. Create a virtual environment and install dependencies:
+1. Fork the repository on GitHub
+2. Clone your fork: `git clone https://github.com/yourusername/dbrowse.git`
+3. Set up development environment:
    ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
+   make quickstart    # Creates venv, installs dependencies, creates test DB
+   # or manually:
+   make setup         # Creates venv and installs dependencies
+   make test-db       # Creates test database
    ```
 
 ## Development Workflow

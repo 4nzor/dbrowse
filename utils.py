@@ -20,9 +20,9 @@ class IntValidator(Validator):
     def validate(self, document) -> None:
         text = document.text.strip()
         if not text:
-            raise ValidationError(message="Значение не может быть пустым")
+            raise ValidationError(message="Value cannot be empty")
         if not text.isdigit():
-            raise ValidationError(message="Введите целое число")
+            raise ValidationError(message="Enter an integer number")
 
 
 def print_header(text: str) -> None:

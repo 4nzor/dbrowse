@@ -24,6 +24,15 @@ from database import (
 )
 from utils import format_size, push_status, status_messages
 
+# Import update checker lazily to avoid blocking startup
+try:
+    from update_checker import check_for_updates, CURRENT_VERSION
+except ImportError:
+    # Fallback if update_checker is not available
+    CURRENT_VERSION = "0.1.0"
+    def check_for_updates():
+        return False, None
+
 style = Style.from_dict(
     {
         "title": "bold underline",
@@ -39,7 +48,7 @@ style = Style.from_dict(
 
 class ClickableTextControl(FormattedTextControl):
     """
-    Расширение FormattedTextControl, позволяющее вешать обработчик мыши.
+    Extension of FormattedTextControl that allows attaching a mouse handler.
     """
 
     def __init__(self, *args, on_click=None, **kwargs):
@@ -54,19 +63,19 @@ class ClickableTextControl(FormattedTextControl):
 
 def browse_connections_ui_once() -> str:
     """
-    Полноэкранный режим:
-    - левая колонка: сохранённые подключения (базы) + кнопка ADD снизу
-    - средняя: таблицы выбранной базы
-    - правая: первые 10 строк выбранной таблицы
-    Управление:
-    - Мышь: клик по базе или таблице; клик по ADD открывает форму добавления
-    - Tab: переключить активную колонку
-    - ↑/↓: перемещение по элементам активной колонки
-    - Enter: загрузить таблицы (в левой колонке) или данные (в средней)
-    - q: выход (возврат в main)
-    Возвращает:
-    - "quit"  — просто выйти
-    - "add"   — открыть форму добавления нового подключения
+    Full-screen mode:
+    - left column: saved connections (databases) + ADD button at bottom
+    - middle: tables of selected database
+    - right: first 10 rows of selected table
+    Controls:
+    - Mouse: click on database or table; click ADD opens add form
+    - Tab: switch active column
+    - ↑/↓: navigate items in active column
+    - Enter: load tables (in left column) or data (in middle)
+    - q: exit (return to main)
+    Returns:
+    - "quit"  — just exit
+    - "add"   — open form to add new connection
     """
 
     saved = load_saved_connections()
@@ -131,7 +140,7 @@ def browse_connections_ui_once() -> str:
             active_conn_idx = idx
             return True
         except Exception as e:
-            push_status(f"Ошибка подключения: {e}")
+            push_status(f"Connection error: {e}")
             active_conn = None
             active_conn_idx = -1
             active_adapter = None
@@ -321,7 +330,7 @@ def browse_connections_ui_once() -> str:
                 order_info = f", sort: {current_order_by_clause}" if current_order_by_clause.strip() else ""
                 push_status(f"MongoDB: collection {table}, filter: {filter_query or '{}'}{order_info}")
                 elapsed = time_module.time() - start_time
-                push_status(f"Запрос выполнен за {elapsed:.3f}с")
+                push_status(f"Query executed in {elapsed:.3f}s")
             else:
                 rows, columns = [], []
                 total_rows_count = 0
@@ -361,7 +370,7 @@ def browse_connections_ui_once() -> str:
             push_status(f"SQL: {base_query}")
             rows, columns = active_adapter.execute_with_description(active_conn, base_query)
             elapsed = time_module.time() - start_time
-            push_status(f"Запрос выполнен за {elapsed:.3f}с")
+            push_status(f"Query executed in {elapsed:.3f}s")
 
     # если есть хотя бы одно подключение – сразу грузим его таблицы
     if connections:
@@ -369,27 +378,27 @@ def browse_connections_ui_once() -> str:
         load_tables_for_connection()
 
     def render_connections() -> List[Tuple[str, str]]:
-        result: List[Tuple[str, str]] = [("class:title", "Базы\n")]
+        result: List[Tuple[str, str]] = [("class:title", "Connections\n")]
         for i, cfg in enumerate(connections):
             prefix = "➤ " if i == selected_conn_idx else "  "
             label = f"{cfg.name} ({cfg.dbname})"
             style_name = "reverse" if (active_column == 0 and i == selected_conn_idx) else ""
             result.append((style_name, f"{prefix}{label}\n"))
-        # кнопка ADD
+        # ADD button
         result.append(("class:menu", "\n[ ADD ]\n"))
         return result
 
     def render_tables() -> List[Tuple[str, str]]:
         nonlocal table_offset, table_line_map
         cfg = connections[selected_conn_idx] if selected_conn_idx >= 0 else None
-        title = "Коллекции\n" if cfg and cfg.db_type == "mongodb" else "Таблицы\n"
+        title = "Collections\n" if cfg and cfg.db_type == "mongodb" else "Tables\n"
         result: List[Tuple[str, str]] = [("class:title", title)]
         table_line_map = [None]
         
-        # Фильтр поиска уже применяется в load_tables_for_connection
+        # Search filter is already applied in load_tables_for_connection
         
         if not tables:
-            result.append(("", "  (нет таблиц)\n"))
+            result.append(("", "  (no tables)\n"))
             table_line_map.append(None)
             return result
 
@@ -421,19 +430,19 @@ def browse_connections_ui_once() -> str:
             result.append((size_style, f"{prefix}{label}\n"))
             table_line_map.append(i)
 
-            # Детали таблицы (колонки и индексы) под ней, если загружены
+            # Table details (columns and indexes) below it, if loaded
             details = table_details.get((schema, name))
             if details:
                 cols = details.get("columns") or []
                 idxs = details.get("indexes") or []
                 if cols:
-                    result.append(("", "      Колонки:\n"))
+                    result.append(("", "      Columns:\n"))
                     table_line_map.append(i)
                     for col in cols:
                         result.append(("", f"        - {col}\n"))
                         table_line_map.append(i)
                 if idxs:
-                    result.append(("", "      Индексы:\n"))
+                    result.append(("", "      Indexes:\n"))
                     table_line_map.append(i)
                     for idx in idxs:
                         result.append(("", f"        - {idx}\n"))
@@ -444,25 +453,25 @@ def browse_connections_ui_once() -> str:
     def render_rows() -> List[Tuple[str, str]]:
         result: List[Tuple[str, str]] = []
         
-        # Заголовок с информацией о пагинации, стрелками и кнопкой CSV
+        # Header with pagination info, arrows and CSV button
         start_row = rows_scroll_offset + 1
         end_row = min(rows_scroll_offset + len(rows), total_rows_count)
-        page_info = f"Строки {start_row}-{end_row} из {total_rows_count}" if total_rows_count > 0 else "Нет данных"
+        page_info = f"Rows {start_row}-{end_row} of {total_rows_count}" if total_rows_count > 0 else "No data"
         
-        # Стрелки для пагинации (кликабельные)
-        # ◀ - предыдущая страница (уменьшает offset)
-        # ▶ - следующая страница (увеличивает offset)
+        # Pagination arrows (clickable)
+        # ◀ - previous page (decreases offset)
+        # ▶ - next page (increases offset)
         can_prev = rows_scroll_offset > 0
         can_next = rows_scroll_offset + rows_per_page < total_rows_count
         
-        result.append(("class:title", f"Данные ({page_info})  "))
-        # Левая стрелка ◀ - предыдущая страница
+        result.append(("class:title", f"Data ({page_info})  "))
+        # Left arrow ◀ - previous page
         if can_prev:
             result.append(("class:menu", "◀"))
         else:
             result.append(("", " "))
         result.append(("", " "))
-        # Правая стрелка ▶ - следующая страница
+        # Right arrow ▶ - next page
         if can_next:
             result.append(("class:menu", "▶"))
         else:
@@ -475,7 +484,7 @@ def browse_connections_ui_once() -> str:
         result.append(("", "\n"))
         
         if not rows:
-            result.append(("", "  (нет данных)\n"))
+            result.append(("", "  (no data)\n"))
             return result
         
         # rows уже содержит только текущую страницу (10 строк)
@@ -490,7 +499,7 @@ def browse_connections_ui_once() -> str:
                 headers = ["value"]
 
         if not headers:
-            result.append(("", "  (нет колонок)\n"))
+            result.append(("", "  (no columns)\n"))
             return result
 
         num_cols = len(headers)
@@ -498,7 +507,7 @@ def browse_connections_ui_once() -> str:
         table_data: List[List[str]] = []
         
         def clean_cell(value: any) -> str:
-            """Очистить ячейку от HTML и ограничить размер."""
+            """Clean cell from HTML and limit size."""
             # Конвертируем в строку
             cell_str = str(value) if value is not None else ""
             # Удаляем HTML теги
@@ -529,7 +538,7 @@ def browse_connections_ui_once() -> str:
 
         # Проверяем что есть данные перед вызовом termtables
         if not table_data:
-            result.append(("", "  (нет данных для отображения)\n"))
+            result.append(("", "  (no data to display)\n"))
             return result
 
         # Ограничиваем ширину заголовков тоже
@@ -546,14 +555,36 @@ def browse_connections_ui_once() -> str:
         # Показываем статистику таблицы внизу
         if total_rows_count > 0:
             result.append(("", "\n"))
-            result.append(("class:hint", f"📊 Всего строк: {total_rows_count:,}\n"))
+            result.append(("class:hint", f"📊 Total rows: {total_rows_count:,}\n"))
         
         return result
 
     def render_status() -> List[Tuple[str, str]]:
-        result: List[Tuple[str, str]] = [("class:title", "Статус\n")]
+        result: List[Tuple[str, str]] = [("class:title", "Status\n")]
+        
+        # Check for updates (non-blocking, cached)
+        if not hasattr(render_status, '_update_checked'):
+            render_status._update_checked = True
+            render_status._has_update = False
+            render_status._latest_version = None
+            
+            # Check in background (simple check, won't block)
+            try:
+                has_update, latest = check_for_updates()
+                render_status._has_update = has_update
+                render_status._latest_version = latest
+            except Exception:
+                pass  # Silently fail if check fails
+        
+        # Show update notification if available
+        if getattr(render_status, '_has_update', False) and getattr(render_status, '_latest_version', None):
+            latest = render_status._latest_version
+            result.append(("class:hint", f"  ⚠️  Update available: v{latest} (current: v{CURRENT_VERSION})\n"))
+            result.append(("class:hint", f"  Run 'dbrowse --update' to update\n"))
+        
         if not status_messages:
-            result.append(("", "  нет сообщений\n"))
+            if not getattr(render_status, '_has_update', False):
+                result.append(("", "  no messages\n"))
             return result
         for msg in status_messages[-5:]:
             result.append(("", f"  {msg}\n"))
@@ -779,7 +810,7 @@ def browse_connections_ui_once() -> str:
             table_search_filter = ""
             table_search_buffer.text = ""
             load_tables_for_connection()
-            push_status("Поиск очищен")
+            push_status("Search cleared")
             event.app.invalidate()
 
     def connections_mouse_handler(mouse_event) -> None:
@@ -878,7 +909,7 @@ def browse_connections_ui_once() -> str:
         BufferControl(table_search_buffer),
         height=3,
         style="class:menu" if active_column == 1 else "",
-        get_line_prefix=lambda line_number, wrap_count: [("class:menu", "🔍 Поиск: ")] if line_number == 0 else [("", "")],
+        get_line_prefix=lambda line_number, wrap_count: [("class:menu", "🔍 Search: ")] if line_number == 0 else [("", "")],
     )
     
     # Поиск применяется при нажатии Enter, не автоматически
@@ -910,9 +941,9 @@ def browse_connections_ui_once() -> str:
     )
     
     def export_to_csv() -> None:
-        """Экспортировать текущие данные в CSV файл."""
+        """Export current data to CSV file."""
         if not rows or not columns:
-            push_status("Нет данных для экспорта")
+            push_status("No data to export")
             return
         
         schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else ("", "", 0)
@@ -927,7 +958,7 @@ def browse_connections_ui_once() -> str:
             import csv
             
             def clean_for_csv(value: any) -> str:
-                """Очистить значение для CSV."""
+                """Clean value for CSV."""
                 if value is None:
                     return ""
                 cell_str = str(value)
@@ -945,14 +976,14 @@ def browse_connections_ui_once() -> str:
                 for row in rows:
                     cleaned_row = [clean_for_csv(v) for v in row]
                     writer.writerow(cleaned_row)
-            push_status(f"Экспортировано в {filename}")
+            push_status(f"Exported to {filename}")
         except Exception as e:
-            push_status(f"Ошибка экспорта: {e}")
+            push_status(f"Export error: {e}")
     
     def export_to_json() -> None:
-        """Экспортировать текущие данные в JSON файл."""
+        """Export current data to JSON file."""
         if not rows or not columns:
-            push_status("Нет данных для экспорта")
+            push_status("No data to export")
             return
         
         schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else ("", "", 0)
@@ -998,12 +1029,12 @@ def browse_connections_ui_once() -> str:
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, cls=JSONEncoder)
-            push_status(f"Экспортировано в {filename}")
+            push_status(f"Exported to {filename}")
         except Exception as e:
-            push_status(f"Ошибка экспорта: {e}")
+            push_status(f"Export error: {e}")
     
     def copy_cell_value(row_idx: int, col_idx: int) -> None:
-        """Копировать значение ячейки в буфер обмена."""
+        """Copy cell value to clipboard."""
         try:
             import subprocess
             import sys
@@ -1021,15 +1052,15 @@ def browse_connections_ui_once() -> str:
                         subprocess.run(["clip"], input=value.encode('utf-8'), check=True, timeout=1)
                     else:
                         # Fallback: просто показываем значение
-                        push_status(f"Значение: {value[:50]}")
+                        push_status(f"Value: {value[:50]}")
                         return
                     
-                    push_status(f"✓ Скопировано: {value[:50]}{'...' if len(value) > 50 else ''}")
+                    push_status(f"✓ Copied: {value[:50]}{'...' if len(value) > 50 else ''}")
                 except (subprocess.TimeoutExpired, FileNotFoundError):
-                    # Если команда не найдена, просто показываем значение
-                    push_status(f"Значение: {value[:100]}")
+                    # If command not found, just show the value
+                    push_status(f"Value: {value[:100]}")
         except Exception as e:
-            push_status(f"Ошибка копирования: {e}")
+            push_status(f"Copy error: {e}")
     
     # Данные с обработчиком мыши для стрелок пагинации и кнопки CSV
     def rows_mouse_handler(mouse_event) -> None:
