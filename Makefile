@@ -138,3 +138,6 @@ sha256: ## Get SHA256 for release (usage: make sha256 VERSION=0.1.0)
 	fi
 	@./scripts/get_sha256.sh $(VERSION)
 
+setup-tap: ## Set up Homebrew tap (creates homebrew-dbrowse repo and formula)
+	@./scripts/setup_homebrew_tap.sh
+

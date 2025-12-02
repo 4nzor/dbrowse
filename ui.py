@@ -10,8 +10,10 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.mouse_events import MouseButton, MouseEventType
 from prompt_toolkit.styles import Style
+from pygments.lexers.sql import SqlLexer
 from psycopg2.extensions import connection as PGConnection
 from pymysql.connections import Connection as MySQLConnection
 
@@ -114,6 +116,15 @@ def browse_connections_ui_once() -> str:
     table_search_filter = ""
     table_search_buffer = Buffer()
     all_tables: List[Tuple[str, str, int]] = []  # Все таблицы без фильтра
+
+    # SQL Editor state
+    sql_editor_mode = False  # True when SQL editor is open
+    sql_editor_buffer = Buffer()
+    sql_query_history: List[str] = []  # History of executed queries
+    sql_history_index = -1  # Current position in history (-1 = new query)
+    sql_query_results: Optional[Tuple[List[Tuple], List[str]]] = None  # (rows, columns)
+    sql_query_error: Optional[str] = None
+    sql_execution_time: Optional[float] = None
 
     active_conn: Optional[Union[PGConnection, MySQLConnection, sqlite3.Connection]] = None
     active_conn_idx: int = -1
@@ -257,6 +268,45 @@ def browse_connections_ui_once() -> str:
             idxs = [f"{name}: {defn}" for (name, defn) in idxs_res]
 
         table_details[key] = {"columns": cols, "indexes": idxs}
+
+    def execute_sql_query(query: str) -> None:
+        """Execute SQL query and store results."""
+        nonlocal sql_query_results, sql_query_error, sql_execution_time, sql_query_history, sql_history_index
+        
+        if active_conn is None or active_adapter is None:
+            sql_query_error = "No database connection"
+            sql_query_results = None
+            return
+        
+        if not query.strip():
+            sql_query_error = "Empty query"
+            sql_query_results = None
+            return
+        
+        import time as time_module
+        start_time = time_module.time()
+        
+        try:
+            # Execute query
+            rows, columns = active_adapter.execute_with_description(active_conn, query)
+            sql_execution_time = time_module.time() - start_time
+            sql_query_results = (rows, columns)
+            sql_query_error = None
+            
+            # Add to history (avoid duplicates)
+            query_clean = query.strip()
+            if query_clean and (not sql_query_history or sql_query_history[-1] != query_clean):
+                sql_query_history.append(query_clean)
+                # Keep only last 50 queries
+                if len(sql_query_history) > 50:
+                    sql_query_history.pop(0)
+            
+            push_status(f"Query executed successfully in {sql_execution_time:.3f}s, {len(rows)} rows")
+        except Exception as e:
+            sql_execution_time = time_module.time() - start_time
+            sql_query_error = str(e)
+            sql_query_results = None
+            push_status(f"Query error: {e}")
 
     def load_rows_for_table(where_clause: Optional[str] = None, reset_offset: bool = True) -> None:
         nonlocal rows, columns, rows_scroll_offset, current_where_clause, total_rows_count
@@ -559,6 +609,92 @@ def browse_connections_ui_once() -> str:
         
         return result
 
+    def render_sql_editor() -> List[Tuple[str, str]]:
+        """Render SQL editor header."""
+        result: List[Tuple[str, str]] = []
+        result.append(("class:title", "SQL Editor (Ctrl+E to open, Esc to close, Ctrl+Enter/F5 to execute)\n"))
+        if active_conn is None or active_adapter is None:
+            result.append(("class:error", "  No database connection\n"))
+        else:
+            cfg = connections[active_conn_idx] if active_conn_idx >= 0 else None
+            if cfg:
+                result.append(("class:hint", f"  Connected to: {cfg.name} ({cfg.dbname})\n"))
+        return result
+
+    def render_sql_results() -> List[Tuple[str, str]]:
+        """Render SQL query results."""
+        result: List[Tuple[str, str]] = []
+        
+        if sql_query_error:
+            result.append(("class:error", f"Error: {sql_query_error}\n"))
+            if sql_execution_time:
+                result.append(("class:hint", f"Execution time: {sql_execution_time:.3f}s\n"))
+            return result
+        
+        if sql_query_results is None:
+            result.append(("class:hint", "  No query executed yet. Press Ctrl+Enter to execute.\n"))
+            return result
+        
+        rows, columns = sql_query_results
+        
+        if not rows:
+            result.append(("class:hint", "  Query returned no rows\n"))
+            if sql_execution_time:
+                result.append(("class:hint", f"Execution time: {sql_execution_time:.3f}s\n"))
+            return result
+        
+        # Show execution time and row count
+        result.append(("class:title", f"Results ({len(rows)} rows"))
+        if sql_execution_time:
+            result.append(("class:hint", f" in {sql_execution_time:.3f}s"))
+        result.append(("", "\n"))
+        
+        # Prepare table data
+        max_cell_width = 30
+        table_data = []
+        headers = columns[:20]  # Limit columns
+        num_cols = len(headers)
+        
+        for row in rows[:100]:  # Limit rows for display
+            cells = []
+            for i, val in enumerate(row[:num_cols]):
+                cell_str = str(val) if val is not None else "NULL"
+                # Clean HTML
+                cell_str = re.sub(r"<[^>]+>", "", cell_str)
+                cell_str = re.sub(r"\s+", " ", cell_str).strip()
+                # Truncate
+                if len(cell_str) > max_cell_width:
+                    cell_str = cell_str[:max_cell_width] + "..."
+                cells.append(cell_str)
+            
+            if len(cells) < num_cols:
+                cells.extend([""] * (num_cols - len(cells)))
+            
+            table_data.append(cells)
+        
+        if not table_data:
+            result.append(("", "  (no data to display)\n"))
+            return result
+        
+        # Limit header width
+        headers_clean = [h[:max_cell_width] + "..." if len(h) > max_cell_width else h for h in headers]
+        
+        try:
+            table_str = tt.to_string(
+                table_data,
+                header=headers_clean,
+                style=tt.styles.thin_thick,
+            )
+            for line in table_str.splitlines():
+                result.append(("", line + "\n"))
+        except Exception as e:
+            result.append(("class:error", f"  Error rendering table: {e}\n"))
+        
+        if len(rows) > 100:
+            result.append(("class:hint", f"\n  ... showing first 100 of {len(rows)} rows\n"))
+        
+        return result
+
     def render_status() -> List[Tuple[str, str]]:
         result: List[Tuple[str, str]] = [("class:title", "Status\n")]
         
@@ -594,11 +730,31 @@ def browse_connections_ui_once() -> str:
 
     @kb.add("q")
     def _(event) -> None:
-        event.app.exit(result="quit")
+        nonlocal sql_editor_mode
+        if sql_editor_mode:
+            sql_editor_mode = False
+            event.app.layout = Layout(HSplit([root_container, status_window]))
+            event.app.invalidate()
+        else:
+            event.app.exit(result="quit")
+    
+    @kb.add("c-e")
+    def _(event) -> None:
+        """Open SQL editor."""
+        nonlocal sql_editor_mode, sql_history_index
+        sql_editor_mode = True
+        sql_history_index = -1
+        event.app.layout = Layout(HSplit([sql_editor_container, status_window]))
+        event.app.layout.focus(sql_editor_window)
+        event.app.invalidate()
 
     @kb.add("tab")
     def _(event) -> None:
-        nonlocal active_column
+        nonlocal active_column, sql_editor_mode
+        
+        # Don't handle tab in SQL editor mode
+        if sql_editor_mode:
+            return
         
         # Проверяем текущий фокус через has_focus
         has_order_by = event.app.layout.has_focus(order_by_buffer_window)
@@ -656,15 +812,35 @@ def browse_connections_ui_once() -> str:
 
     @kb.add("up")
     def _(event) -> None:
-        nonlocal selected_conn_idx, selected_table_idx, table_offset
+        """Handle up arrow - SQL history or table navigation."""
+        nonlocal selected_conn_idx, selected_table_idx, table_offset, sql_history_index, sql_editor_mode
+        
+        # SQL editor history navigation
+        if sql_editor_mode:
+            if sql_editor_buffer.has_focus():
+                if sql_query_history:
+                    if sql_history_index < 0:
+                        # Save current query before navigating
+                        current = sql_editor_buffer.text.strip()
+                        if current and (not sql_query_history or sql_query_history[-1] != current):
+                            sql_query_history.append(current)
+                    sql_history_index = min(len(sql_query_history) - 1, sql_history_index + 1)
+                    if sql_history_index >= 0:
+                        sql_editor_buffer.text = sql_query_history[-(sql_history_index + 1)]
+                    event.app.invalidate()
+                return
+        
         # Если фокус на WHERE - переключаемся на ORDER BY
-        if event.app.layout.has_focus(where_buffer_window):
-            event.app.layout.focus(order_by_buffer_window)
-            event.app.invalidate()
-            return
-        # Если фокус на полях ввода - не обрабатываем стрелки для навигации
-        if event.app.layout.has_focus(order_by_buffer_window) or event.app.layout.has_focus(table_search_window):
-            return
+        try:
+            if event.app.layout.has_focus(where_buffer_window):
+                event.app.layout.focus(order_by_buffer_window)
+                event.app.invalidate()
+                return
+            # Если фокус на полях ввода - не обрабатываем стрелки для навигации
+            if event.app.layout.has_focus(order_by_buffer_window) or event.app.layout.has_focus(table_search_window):
+                return
+        except (ValueError, AttributeError):
+            pass  # Windows not in layout
         if active_column == 0 and connections:
             selected_conn_idx = max(0, selected_conn_idx - 1)
         elif active_column == 1 and tables:
@@ -673,17 +849,20 @@ def browse_connections_ui_once() -> str:
                 table_offset = selected_table_idx
         event.app.invalidate()
 
-    @kb.add("down")
-    def _(event) -> None:
+    # Down handler moved above - check sql_editor_mode first
+    def handle_down_original(event) -> None:
         nonlocal selected_conn_idx, selected_table_idx, table_offset
         # Если фокус на ORDER BY - переключаемся на WHERE
-        if event.app.layout.has_focus(order_by_buffer_window):
-            event.app.layout.focus(where_buffer_window)
-            event.app.invalidate()
-            return
-        # Если фокус на полях ввода - не обрабатываем стрелки для навигации
-        if event.app.layout.has_focus(where_buffer_window) or event.app.layout.has_focus(table_search_window):
-            return
+        try:
+            if event.app.layout.has_focus(order_by_buffer_window):
+                event.app.layout.focus(where_buffer_window)
+                event.app.invalidate()
+                return
+            # Если фокус на полях ввода - не обрабатываем стрелки для навигации
+            if event.app.layout.has_focus(where_buffer_window) or event.app.layout.has_focus(table_search_window):
+                return
+        except (ValueError, AttributeError):
+            pass  # Windows not in layout
         if active_column == 0 and connections:
             selected_conn_idx = min(len(connections) - 1, selected_conn_idx + 1)
         elif active_column == 1 and tables:
@@ -712,75 +891,109 @@ def browse_connections_ui_once() -> str:
 
     @kb.add("enter")
     def _(event) -> None:
-        nonlocal current_where_clause, current_order_by_clause
+        nonlocal current_where_clause, current_order_by_clause, sql_editor_mode
+        
+        # Don't handle enter in SQL editor mode (except for executing query)
+        if sql_editor_mode:
+            return
+        
         # Проверяем, не находится ли фокус на Buffer
-        if event.app.layout.has_focus(where_buffer_window):
-            # Применить WHERE фильтр
-            new_where = where_buffer.text.strip()
-            schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
-            if schema and table:
-                key = (schema, table)
-                table_where_clauses[key] = new_where
-            current_where_clause = new_where
-            load_rows_for_table(new_where)
-            event.app.invalidate()
-        elif event.app.layout.has_focus(order_by_buffer_window):
-            # Применить ORDER BY
-            new_order_by = order_by_buffer.text.strip()
-            schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
-            if schema and table:
-                key = (schema, table)
-                table_order_by_clauses[key] = new_order_by
-            current_order_by_clause = new_order_by
-            load_rows_for_table()
-            event.app.invalidate()
-        elif event.app.layout.has_focus(table_search_window):
-            # Применить поиск
-            nonlocal table_search_filter
-            table_search_filter = table_search_buffer.text.strip()
-            load_tables_for_connection()
-            event.app.layout.focus(middle_tables_window)
-            event.app.invalidate()
-        elif active_column == 0:
+        try:
+            if event.app.layout.has_focus(where_buffer_window):
+                # Применить WHERE фильтр
+                new_where = where_buffer.text.strip()
+                schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
+                if schema and table:
+                    key = (schema, table)
+                    table_where_clauses[key] = new_where
+                current_where_clause = new_where
+                load_rows_for_table(new_where)
+                event.app.invalidate()
+                return
+            elif event.app.layout.has_focus(order_by_buffer_window):
+                # Применить ORDER BY
+                new_order_by = order_by_buffer.text.strip()
+                schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
+                if schema and table:
+                    key = (schema, table)
+                    table_order_by_clauses[key] = new_order_by
+                current_order_by_clause = new_order_by
+                load_rows_for_table()
+                event.app.invalidate()
+                return
+            elif event.app.layout.has_focus(table_search_window):
+                # Применить поиск
+                nonlocal table_search_filter
+                table_search_filter = table_search_buffer.text.strip()
+                load_tables_for_connection()
+                try:
+                    event.app.layout.focus(middle_tables_window)
+                except (ValueError, AttributeError):
+                    pass
+                event.app.invalidate()
+                return
+        except (ValueError, AttributeError):
+            pass  # Windows not in layout
+        
+        if active_column == 0:
             load_tables_for_connection()
             event.app.invalidate()
         elif active_column == 1:
             # При Enter в колонке таблиц переключаемся на колонку данных
             active_column = 2
             load_rows_for_table()
-            event.app.layout.focus(order_by_buffer_window)
+            try:
+                event.app.layout.focus(order_by_buffer_window)
+            except (ValueError, AttributeError):
+                pass
             event.app.invalidate()
 
     @kb.add("escape")
     def _(event) -> None:
-        nonlocal current_where_clause, current_order_by_clause
-        if event.app.layout.has_focus(where_buffer_window):
-            # Очистить WHERE
-            schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
-            if schema and table:
-                key = (schema, table)
-                table_where_clauses[key] = ""
-            current_where_clause = ""
-            where_buffer.text = ""
-            load_rows_for_table()
+        nonlocal current_where_clause, current_order_by_clause, sql_editor_mode
+        
+        # Close SQL editor on Esc
+        if sql_editor_mode:
+            sql_editor_mode = False
+            event.app.layout = Layout(HSplit([root_container, status_window]))
             event.app.invalidate()
-        elif event.app.layout.has_focus(order_by_buffer_window):
-            # Очистить ORDER BY
-            schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
-            if schema and table:
-                key = (schema, table)
-                table_order_by_clauses[key] = ""
-            current_order_by_clause = ""
-            order_by_buffer.text = ""
-            load_rows_for_table()
-            event.app.invalidate()
-        elif event.app.layout.has_focus(table_search_window):
-            # Очистить поиск
-            table_search_filter = ""
-            table_search_buffer.text = ""
-            load_tables_for_connection()
-            event.app.invalidate()
-        elif active_column == 2:
+            return
+        
+        try:
+            if event.app.layout.has_focus(where_buffer_window):
+                # Очистить WHERE
+                schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
+                if schema and table:
+                    key = (schema, table)
+                    table_where_clauses[key] = ""
+                current_where_clause = ""
+                where_buffer.text = ""
+                load_rows_for_table()
+                event.app.invalidate()
+                return
+                return
+            elif event.app.layout.has_focus(order_by_buffer_window):
+                # Очистить ORDER BY
+                schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
+                if schema and table:
+                    key = (schema, table)
+                    table_order_by_clauses[key] = ""
+                current_order_by_clause = ""
+                order_by_buffer.text = ""
+                load_rows_for_table()
+                event.app.invalidate()
+                return
+            elif event.app.layout.has_focus(table_search_window):
+                # Очистить поиск
+                table_search_filter = ""
+                table_search_buffer.text = ""
+                load_tables_for_connection()
+                event.app.invalidate()
+                return
+        except (ValueError, AttributeError):
+            pass  # Windows not in layout
+        
+        if active_column == 2:
             # Очистить оба поля
             schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
             if schema and table:
@@ -797,9 +1010,14 @@ def browse_connections_ui_once() -> str:
     @kb.add("f")
     def _(event) -> None:
         """Фокус на поле поиска таблиц."""
-        nonlocal active_column
+        nonlocal active_column, sql_editor_mode
+        if sql_editor_mode:
+            return  # Don't handle in SQL editor mode
         if active_column == 1:
-            event.app.layout.focus(table_search_window)
+            try:
+                event.app.layout.focus(table_search_window)
+            except ValueError:
+                pass  # Window not in layout
             event.app.invalidate()
     
     @kb.add("c-f")
@@ -812,6 +1030,25 @@ def browse_connections_ui_once() -> str:
             load_tables_for_connection()
             push_status("Search cleared")
             event.app.invalidate()
+    
+    @kb.add("c-m")
+    def _(event) -> None:
+        """Execute SQL query in editor (Ctrl+Enter or Ctrl+M)."""
+        nonlocal sql_editor_mode
+        if sql_editor_mode:
+            query = sql_editor_buffer.text
+            execute_sql_query(query)
+            event.app.invalidate()
+    
+    @kb.add("f5")
+    def _(event) -> None:
+        """Execute SQL query in editor (F5)."""
+        nonlocal sql_editor_mode
+        if sql_editor_mode:
+            query = sql_editor_buffer.text
+            execute_sql_query(query)
+            event.app.invalidate()
+    
 
     def connections_mouse_handler(mouse_event) -> None:
         nonlocal selected_conn_idx
@@ -1138,6 +1375,29 @@ def browse_connections_ui_once() -> str:
         right_data_window,
     ])
 
+    # SQL Editor windows (created before use)
+    sql_editor_header_window = Window(
+        FormattedTextControl(render_sql_editor),
+        height=3,
+    )
+    sql_editor_window = Window(
+        BufferControl(
+            sql_editor_buffer,
+            lexer=PygmentsLexer(SqlLexer),
+        ),
+        wrap_lines=False,
+    )
+    sql_results_window = Window(
+        FormattedTextControl(render_sql_results),
+        wrap_lines=False,
+    )
+    
+    sql_editor_container = HSplit([
+        sql_editor_header_window,
+        sql_editor_window,
+        sql_results_window,
+    ])
+
     root_container = VSplit(
         [
             left_window,
@@ -1152,7 +1412,7 @@ def browse_connections_ui_once() -> str:
         height=6,
         wrap_lines=True,
     )
-
+    
     app = Application(
         layout=Layout(HSplit([root_container, status_window])),
         key_bindings=kb,

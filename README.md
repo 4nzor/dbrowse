@@ -43,12 +43,22 @@ Add screenshots here when available:
 
 ## Installation
 
+### 🍺 Quick Install (macOS) - Recommended
+
+The fastest way to get started:
+
+```bash
+brew tap 4nzor/dbrowse
+brew install dbrowse
+dbrowse  # Start using immediately!
+```
+
 ### Prerequisites
 
 - Python 3.8 or higher
 - pip
 
-### Setup
+### Setup (Alternative Methods)
 
 1. Clone the repository:
 
@@ -116,22 +126,19 @@ dbrowser   # Alias (convenience)
 
 ### Quick Start
 
-**Option 1: Install as command (recommended)**
+**Option 1: Install via Homebrew (macOS) - Easiest! ⭐**
+```bash
+brew tap 4nzor/dbrowse
+brew install dbrowse
+dbrowse  # Start using immediately!
+```
+
+**Option 2: Install as command (for development)**
 ```bash
 make install-package  # Install in development mode
 dbrowse               # Run the application
 # or
 dbrowser              # Alias command
-```
-
-**Option 2: Install via Homebrew**
-```bash
-# From local formula
-brew install --build-from-source ./Formula/dbrowse.rb
-
-# Or from tap (when available)
-brew tap yourusername/dbrowse
-brew install dbrowse
 ```
 
 **Option 3: Run directly**
@@ -343,16 +350,28 @@ If you find dbrowse useful, please consider giving it a star ⭐ on GitHub!
 
 ## 📦 Installation Methods
 
-### Homebrew (macOS)
+### Homebrew (macOS) - Recommended
+
+The easiest way to install dbrowse on macOS:
 
 ```bash
-# From local formula
-brew install --build-from-source ./Formula/dbrowse.rb
-
-# Or from tap (when available)
-brew tap yourusername/dbrowse
+brew tap 4nzor/dbrowse
 brew install dbrowse
 ```
+
+That's it! After installation, you can run `dbrowse` or `dbrowser` from anywhere.
+
+**Updating via Homebrew:**
+```bash
+brew upgrade dbrowse
+```
+
+Or use the built-in update checker:
+```bash
+dbrowse --update
+```
+
+> 💡 **For developers**: To set up your own tap, run `make setup-tap` (see `.local-docs/HOMEBREW_TAP.md` for details)
 
 ### pip
 
