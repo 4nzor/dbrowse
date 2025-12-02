@@ -12,8 +12,8 @@ class Dbrowse < Formula
 
   desc "Terminal-based database management utility (TUI) for multiple database types"
   homepage "https://github.com/4nzor/dbrowse"
-  url "https://github.com/4nzor/dbrowse/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "77b1954bd4a292cda736c3cd3e0a49f866d37c14853bf669c112d2cf298cd483"  # Will be filled after first release - use: make sha256 VERSION=0.1.0
+  url "https://github.com/4nzor/dbrowse/archive/refs/tags/v0.1.12.tar.gz"
+  sha256 "db603c59ee6179e82d54f5974787c57e4c12d0f780c8317bde8b4a7709aa6978"  # SHA256 for v0.1.12
   license "MIT"
   head "https://github.com/4nzor/dbrowse.git", branch: "main"
 
