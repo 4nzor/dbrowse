@@ -28,13 +28,25 @@ jobs:
         run: python -m build
       
       - name: Create Release
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           files: dist/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+
+      - name: Update Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          formula-name: dbrowse
+          homebrew-tap: 4nzor/homebrew-dbrowse
+          base-branch: main
+          download-url: https://github.com/4nzor/dbrowse/archive/${{ github.ref_name }}.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
       - name: Publish to PyPI (optional)
         if: false  # Set to true when ready to publish to PyPI
         env:
