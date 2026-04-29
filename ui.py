@@ -44,6 +44,10 @@ style = Style.from_dict(
         "hint": "fg:#888888",
         "large-table": "fg:red",
         "medium-table": "fg:yellow",
+        "env-production": "fg:white bg:red bold",
+        "env-staging": "fg:black bg:yellow bold",
+        "env-development": "fg:white bg:green bold",
+        "production-border": "fg:red",
     }
 )
 
@@ -103,6 +107,7 @@ def browse_connections_ui_once() -> str:
     rows_scroll_offset = 0  # SQL OFFSET для пагинации
     rows_per_page = 10  # количество строк на странице (SQL LIMIT)
     total_rows_count = 0  # общее количество строк (для отображения)
+    last_clicked_col_idx = 0 # Индекс последней кликнутой колонки
     current_where_clause = ""  # текущий WHERE фильтр
     table_where_clauses: Dict[Tuple[str, str], str] = {}  # WHERE для каждой таблицы
     current_order_by_clause = ""  # текущий ORDER BY
@@ -119,6 +124,9 @@ def browse_connections_ui_once() -> str:
 
     # SQL Editor state
     sql_editor_mode = False  # True when SQL editor is open
+    column_stats_mode = False # True when column stats view is open
+    stats_data: Optional[List[Tuple]] = None
+    stats_column: str = ""
     sql_editor_buffer = Buffer()
     sql_query_history: List[str] = []  # History of executed queries
     sql_history_index = -1  # Current position in history (-1 = new query)
@@ -431,9 +439,14 @@ def browse_connections_ui_once() -> str:
         result: List[Tuple[str, str]] = [("class:title", "Connections\n")]
         for i, cfg in enumerate(connections):
             prefix = "➤ " if i == selected_conn_idx else "  "
-            label = f"{cfg.name} ({cfg.dbname})"
+            env_tag = f"[{cfg.env[:1].upper()}]"
+            label = f"{prefix}{env_tag} {cfg.name}"
+
             style_name = "reverse" if (active_column == 0 and i == selected_conn_idx) else ""
-            result.append((style_name, f"{prefix}{label}\n"))
+            if cfg.env == "production":
+                style_name += " fg:red" if not style_name else " bg:red fg:white"
+
+            result.append((style_name, f"{label}\n"))
         # ADD button
         result.append(("class:menu", "\n[ ADD ]\n"))
         return result
@@ -503,6 +516,12 @@ def browse_connections_ui_once() -> str:
     def render_rows() -> List[Tuple[str, str]]:
         result: List[Tuple[str, str]] = []
         
+        # Safety warning for production
+        cfg = connections[active_conn_idx] if active_conn_idx >= 0 else None
+        if cfg and cfg.env == "production":
+            result.append(("class:env-production", "  ⚠️  PRODUCTION ENVIRONMENT - BE CAREFUL!  ⚠️  "))
+            result.append(("", "\n"))
+
         # Header with pagination info, arrows and CSV button
         start_row = rows_scroll_offset + 1
         end_row = min(rows_scroll_offset + len(rows), total_rows_count)
@@ -531,6 +550,8 @@ def browse_connections_ui_once() -> str:
         result.append(("class:menu", "[ CSV ]"))
         result.append(("", " "))
         result.append(("class:menu", "[ JSON ]"))
+        result.append(("", " "))
+        result.append(("class:menu", "[ MD ]"))
         result.append(("", "\n"))
         
         if not rows:
@@ -619,6 +640,27 @@ def browse_connections_ui_once() -> str:
             cfg = connections[active_conn_idx] if active_conn_idx >= 0 else None
             if cfg:
                 result.append(("class:hint", f"  Connected to: {cfg.name} ({cfg.dbname})\n"))
+        return result
+
+    def render_column_stats() -> List[Tuple[str, str]]:
+        """Render column distribution stats."""
+        result: List[Tuple[str, str]] = []
+        result.append(("class:title", f"Distribution for column: {stats_column}\n"))
+
+        if not stats_data:
+            result.append(("", "  No data or error calculating stats.\n"))
+            return result
+
+        headers = ["Value", "Count", "Percentage"]
+        table_str = tt.to_string(
+            [[str(v) for v in row] for row in stats_data],
+            header=headers,
+            style=tt.styles.thin_thick,
+        )
+        for line in table_str.splitlines():
+            result.append(("", line + "\n"))
+
+        result.append(("", "\nPress Esc to return.\n"))
         return result
 
     def render_sql_results() -> List[Tuple[str, str]]:
@@ -730,9 +772,10 @@ def browse_connections_ui_once() -> str:
 
     @kb.add("q")
     def _(event) -> None:
-        nonlocal sql_editor_mode
-        if sql_editor_mode:
+        nonlocal sql_editor_mode, column_stats_mode
+        if sql_editor_mode or column_stats_mode:
             sql_editor_mode = False
+            column_stats_mode = False
             event.app.layout = Layout(HSplit([root_container, status_window]))
             event.app.invalidate()
         else:
@@ -849,9 +892,22 @@ def browse_connections_ui_once() -> str:
                 table_offset = selected_table_idx
         event.app.invalidate()
 
-    # Down handler moved above - check sql_editor_mode first
-    def handle_down_original(event) -> None:
-        nonlocal selected_conn_idx, selected_table_idx, table_offset
+    @kb.add("down")
+    def _(event) -> None:
+        nonlocal selected_conn_idx, selected_table_idx, table_offset, sql_history_index, sql_editor_mode
+
+        # SQL editor history navigation
+        if sql_editor_mode:
+            if sql_editor_buffer.has_focus():
+                if sql_query_history:
+                    sql_history_index = max(-1, sql_history_index - 1)
+                    if sql_history_index >= 0:
+                        sql_editor_buffer.text = sql_query_history[-(sql_history_index + 1)]
+                    else:
+                        sql_editor_buffer.text = ""
+                    event.app.invalidate()
+                return
+
         # Если фокус на ORDER BY - переключаемся на WHERE
         try:
             if event.app.layout.has_focus(order_by_buffer_window):
@@ -950,11 +1006,12 @@ def browse_connections_ui_once() -> str:
 
     @kb.add("escape")
     def _(event) -> None:
-        nonlocal current_where_clause, current_order_by_clause, sql_editor_mode
+        nonlocal current_where_clause, current_order_by_clause, sql_editor_mode, column_stats_mode
         
-        # Close SQL editor on Esc
-        if sql_editor_mode:
+        # Close special modes on Esc
+        if sql_editor_mode or column_stats_mode:
             sql_editor_mode = False
+            column_stats_mode = False
             event.app.layout = Layout(HSplit([root_container, status_window]))
             event.app.invalidate()
             return
@@ -1007,12 +1064,45 @@ def browse_connections_ui_once() -> str:
             load_rows_for_table()
             event.app.invalidate()
 
+    @kb.add("s")
+    def _(event) -> None:
+        """Show column stats."""
+        nonlocal column_stats_mode, stats_data, stats_column, active_column
+        if sql_editor_mode or column_stats_mode:
+            return
+
+        if active_column == 2 and columns and selected_table_idx >= 0:
+            # Get current column (based on mouse position or first column)
+            col_idx = last_clicked_col_idx
+            if col_idx < 0 or col_idx >= len(columns):
+                col_idx = 0
+            stats_column = columns[col_idx]
+
+            schema, table, _size = tables[selected_table_idx]
+            cfg = connections[active_conn_idx]
+
+            try:
+                if cfg.db_type == "mongodb":
+                    from database import MongoDBAdapter
+                    if isinstance(active_adapter, MongoDBAdapter):
+                        stats_data = active_adapter.get_column_stats(active_conn, cfg.dbname, table, stats_column)
+                else:
+                    query = active_adapter.get_column_stats_query(schema, table, stats_column)
+                    stats_data = active_adapter.execute(active_conn, query)
+
+                column_stats_mode = True
+                event.app.layout = Layout(HSplit([column_stats_container, status_window]))
+                event.app.invalidate()
+                push_status(f"Calculated stats for column '{stats_column}'")
+            except Exception as e:
+                push_status(f"Stats error: {e}")
+
     @kb.add("f")
     def _(event) -> None:
         """Фокус на поле поиска таблиц."""
-        nonlocal active_column, sql_editor_mode
-        if sql_editor_mode:
-            return  # Don't handle in SQL editor mode
+        nonlocal active_column, sql_editor_mode, column_stats_mode
+        if sql_editor_mode or column_stats_mode:
+            return  # Don't handle in special modes
         if active_column == 1:
             try:
                 event.app.layout.focus(table_search_window)
@@ -1217,6 +1307,48 @@ def browse_connections_ui_once() -> str:
         except Exception as e:
             push_status(f"Export error: {e}")
     
+    def export_to_markdown() -> None:
+        """Export current data to Markdown file."""
+        if not rows or not columns:
+            push_status("No data to export")
+            return
+
+        schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else ("", "", 0)
+        cfg = connections[active_conn_idx]
+
+        # Генерируем имя файла
+        table_name = table or "data"
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{cfg.name}_{table_name}_{timestamp}.md"
+
+        try:
+            def clean_for_md(value: any) -> str:
+                """Clean value for Markdown."""
+                if value is None:
+                    return ""
+                cell_str = str(value)
+                # Удаляем HTML теги
+                cell_str = re.sub(r'<[^>]+>', '', cell_str)
+                # Удаляем переносы строк
+                cell_str = cell_str.replace("\n", "<br>").replace("\r", "")
+                # Экранируем пайпы
+                cell_str = cell_str.replace("|", "\\|")
+                return cell_str
+
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# Data from {table_name}\n\n")
+                # Header
+                f.write("| " + " | ".join(columns) + " |\n")
+                # Separator
+                f.write("| " + " | ".join(["---"] * len(columns)) + " |\n")
+                # Rows
+                for row in rows:
+                    f.write("| " + " | ".join([clean_for_md(v) for v in row]) + " |\n")
+
+            push_status(f"Exported to {filename}")
+        except Exception as e:
+            push_status(f"Export error: {e}")
+
     def export_to_json() -> None:
         """Export current data to JSON file."""
         if not rows or not columns:
@@ -1273,29 +1405,20 @@ def browse_connections_ui_once() -> str:
     def copy_cell_value(row_idx: int, col_idx: int) -> None:
         """Copy cell value to clipboard."""
         try:
-            import subprocess
-            import sys
+            import pyperclip
             
             if row_idx < len(rows) and col_idx < len(columns):
-                value = str(rows[row_idx][col_idx])
+                row = rows[row_idx]
+                if isinstance(row, (list, tuple)):
+                    value = str(row[col_idx])
+                elif isinstance(row, dict):
+                    col_name = columns[col_idx]
+                    value = str(row.get(col_name, ""))
+                else:
+                    value = str(row)
                 
-                # Пытаемся скопировать в буфер обмена
-                try:
-                    if sys.platform == "darwin":  # macOS
-                        subprocess.run(["pbcopy"], input=value.encode('utf-8'), check=True, timeout=1)
-                    elif sys.platform == "linux":  # Linux
-                        subprocess.run(["xclip", "-selection", "clipboard"], input=value.encode('utf-8'), check=True, timeout=1)
-                    elif sys.platform == "win32":  # Windows
-                        subprocess.run(["clip"], input=value.encode('utf-8'), check=True, timeout=1)
-                    else:
-                        # Fallback: просто показываем значение
-                        push_status(f"Value: {value[:50]}")
-                        return
-                    
-                    push_status(f"✓ Copied: {value[:50]}{'...' if len(value) > 50 else ''}")
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    # If command not found, just show the value
-                    push_status(f"Value: {value[:100]}")
+                pyperclip.copy(value)
+                push_status(f"✓ Copied: {value[:50]}{'...' if len(value) > 50 else ''}")
         except Exception as e:
             push_status(f"Copy error: {e}")
     
@@ -1310,11 +1433,61 @@ def browse_connections_ui_once() -> str:
         # termtables добавляет разделители, поэтому нужно учесть это
         if mouse_event.position.y > 2 and rows:  # y=0 заголовок, y=1 разделитель, y=2 первая строка
             try:
-                # Определяем строку: вычитаем заголовок, разделитель и учитываем что каждая строка данных занимает 1 строку
-                clicked_row = mouse_event.position.y - 3  # -3 для заголовка, разделителя и первой строки
-                if 0 <= clicked_row < len(rows):
-                    # Упрощенно: копируем первую колонку (можно улучшить для определения колонки по x)
-                    copy_cell_value(clicked_row, 0)
+                # В стиле thin_thick: y=0 header, y=1 divider (┝━...), y=2 first row
+                # Но если есть предупреждение о Production, то все смещается на 1 строку вниз
+                offset = 2
+                cfg_current = connections[active_conn_idx] if active_conn_idx >= 0 else None
+                if cfg_current and cfg_current.env == "production":
+                    offset += 2
+
+                if mouse_event.position.y < offset:
+                    # Клик по заголовку или предупреждению обрабатывается ниже
+                    pass
+                else:
+                    clicked_row = mouse_event.position.y - offset
+                    if clicked_row == 1: # Это разделитель
+                        return
+                    if clicked_row > 1:
+                        clicked_row -= 1 # Учитываем разделитель
+
+                    if 0 <= clicked_row < len(rows):
+                        # Пытаемся определить колонку по x
+                        x = mouse_event.position.x
+
+                    # Получаем строку таблицы для расчета колонок
+                    # Мы можем пересобрать таблицу или использовать закешированную версию
+                    # Здесь мы просто попытаемся найти разделители │ в строке
+                    # Для этого нам нужно знать, как именно termtables отрисовал эту строку
+
+                    # Так как мы не храним отрисованную таблицу, мы можем только догадываться.
+                    # Но мы можем примерно оценить по средним ширинам.
+                    # Более надежный способ: найти отрисованную строку в текущем выводе (если это возможно)
+                    # Или просто использовать x для определения колонки, если мы знаем их ширины.
+
+                    # Упрощенная реализация: считаем количество '│' до позиции x
+                    # Для этого нам нужно получить саму строку. Мы можем вызвать render_rows и найти нужную строку.
+                    rendered = render_rows()
+                    table_lines = []
+                    for style, text in rendered:
+                        table_lines.extend(text.splitlines())
+
+                    # Ищем строку данных (учитываем смещение)
+                    line_idx = mouse_event.position.y
+                    if line_idx < len(table_lines):
+                        target_line = table_lines[line_idx]
+                        # Считаем колонку по количеству │ слева от x
+                        col_idx = target_line[:x].count('│') - 1
+                        if col_idx < 0: col_idx = 0
+                        if col_idx >= len(columns): col_idx = len(columns) - 1
+
+                        # Сохраняем индекс последней кликнутой колонки для статистики
+                        nonlocal last_clicked_col_idx
+                        last_clicked_col_idx = col_idx
+
+                        copy_cell_value(clicked_row, col_idx)
+                    else:
+                        copy_cell_value(clicked_row, 0)
+
                     app.invalidate()
                     return
             except:
@@ -1336,6 +1509,12 @@ def browse_connections_ui_once() -> str:
             # Кнопка [ CSV ] - позиция title_len + 6
             # Кнопка [ JSON ] - позиция title_len + 14
             
+            # Проверяем клик по кнопке MD
+            if title_len + 23 <= x <= title_len + 29:
+                export_to_markdown()
+                app.invalidate()
+                return
+
             # Проверяем клик по кнопке JSON
             if title_len + 14 <= x <= title_len + 22:
                 export_to_json()
@@ -1398,6 +1577,15 @@ def browse_connections_ui_once() -> str:
         sql_results_window,
     ])
 
+    column_stats_window = Window(
+        FormattedTextControl(render_column_stats),
+        wrap_lines=False,
+    )
+
+    column_stats_container = HSplit([
+        column_stats_window,
+    ])
+
     root_container = VSplit(
         [
             left_window,
@@ -1413,12 +1601,19 @@ def browse_connections_ui_once() -> str:
         wrap_lines=True,
     )
     
+    def get_root_style():
+        cfg = connections[active_conn_idx] if active_conn_idx >= 0 else None
+        if cfg and cfg.env == "production":
+            return "class:production-border"
+        return ""
+
     app = Application(
         layout=Layout(HSplit([root_container, status_window])),
         key_bindings=kb,
         full_screen=True,
         style=style,
         mouse_support=True,
+        get_style=get_root_style,
     )
     try:
         result = app.run()
