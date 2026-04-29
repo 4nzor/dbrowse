@@ -65,6 +65,11 @@ class DatabaseAdapter(ABC):
         """Получить схему по умолчанию."""
         pass
 
+    @abstractmethod
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        """SQL запрос для получения статистики по колонке."""
+        pass
+
 
 class PostgreSQLAdapter(DatabaseAdapter):
     def connect(self, cfg: ConnectionConfig) -> PGConnection:
@@ -120,6 +125,19 @@ class PostgreSQLAdapter(DatabaseAdapter):
     
     def get_default_schema(self) -> str:
         return "public"
+
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        schema_q = self.quote_identifier(schema)
+        table_q = self.quote_identifier(table)
+        column_q = self.quote_identifier(column)
+        return f"""
+            SELECT {column_q} AS value, COUNT(*) AS count,
+                   ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS percentage
+            FROM {schema_q}.{table_q}
+            GROUP BY {column_q}
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
 
 
 class MySQLAdapter(DatabaseAdapter):
@@ -183,6 +201,18 @@ class MySQLAdapter(DatabaseAdapter):
     def get_default_schema(self) -> str:
         return ""
 
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        table_q = self.quote_identifier(table)
+        column_q = self.quote_identifier(column)
+        return f"""
+            SELECT {column_q} AS value, COUNT(*) AS count,
+                   ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {table_q}), 2) AS percentage
+            FROM {table_q}
+            GROUP BY {column_q}
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
+
 
 class SQLiteAdapter(DatabaseAdapter):
     def connect(self, cfg: ConnectionConfig) -> sqlite3.Connection:
@@ -210,7 +240,8 @@ class SQLiteAdapter(DatabaseAdapter):
         return result, columns
     
     def get_tables_query(self, schema: str = "") -> str:
-        # SQLite не поддерживает размер таблиц напрямую, возвращаем 0
+        # В SQLite сложно получить размер каждой таблицы отдельно без расширений (dbstat).
+        # По умолчанию возвращаем 0, чтобы не вводить в заблуждение общим размером БД.
         return """
             SELECT 'main' AS table_schema, name AS table_name, 0 AS total_size
             FROM sqlite_master
@@ -238,6 +269,18 @@ class SQLiteAdapter(DatabaseAdapter):
     
     def get_default_schema(self) -> str:
         return "main"
+
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        table_q = self.quote_identifier(table)
+        column_q = self.quote_identifier(column)
+        return f"""
+            SELECT {column_q} AS value, COUNT(*) AS count,
+                   ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {table_q}), 2) AS percentage
+            FROM {table_q}
+            GROUP BY {column_q}
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
 
 
 class MongoDBAdapter(DatabaseAdapter):
@@ -289,6 +332,30 @@ class MongoDBAdapter(DatabaseAdapter):
     def get_default_schema(self) -> str:
         return ""
     
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        return ""
+
+    def get_column_stats(self, conn, dbname: str, collection: str, column: str, limit: int = 10) -> List[Tuple]:
+        """Получить статистику по полю MongoDB."""
+        try:
+            db = conn[dbname]
+            coll = db[collection]
+            pipeline = [
+                {"$group": {"_id": f"${column}", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": limit}
+            ]
+            results = list(coll.aggregate(pipeline))
+
+            total = coll.count_documents({})
+            stats = []
+            for r in results:
+                percentage = round(r['count'] * 100.0 / total, 2) if total > 0 else 0
+                stats.append((str(r['_id']), r['count'], percentage))
+            return stats
+        except:
+            return []
+
     def get_collections(self, conn, dbname: str) -> List[Tuple[str, str, int]]:
         """Получить список коллекций MongoDB."""
         try:
@@ -441,6 +508,18 @@ class ClickHouseAdapter(DatabaseAdapter):
     def get_default_schema(self) -> str:
         return ""
 
+    def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
+        table_q = self.quote_identifier(table)
+        column_q = self.quote_identifier(column)
+        return f"""
+            SELECT {column_q} AS value, COUNT(*) AS count,
+                   ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {table_q}), 2) AS percentage
+            FROM {table_q}
+            GROUP BY {column_q}
+            ORDER BY count DESC
+            LIMIT {limit}
+        """
+
 
 def get_adapter(db_type: str) -> DatabaseAdapter:
     """Получить адаптер для типа БД."""
@@ -467,6 +546,7 @@ class ConnectionConfig:
     dbname: str = "postgres"
     user: str = "postgres"
     password: str = ""
+    env: str = "development"  # development, staging, production
     # Для SQLite: dbname используется как путь к файлу
     # Для MongoDB: dbname - имя базы данных
 
@@ -503,6 +583,7 @@ def load_saved_connections() -> Dict[str, ConnectionConfig]:
                 dbname=cfg.get("dbname", "postgres"),
                 user=cfg.get("user", "postgres"),
                 password=cfg.get("password", ""),
+                env=cfg.get("env", "development"),
             )
         except Exception:
             continue
@@ -521,6 +602,7 @@ def save_connection_config(cfg: ConnectionConfig) -> None:
             "dbname": c.dbname,
             "user": c.user,
             "password": c.password,
+            "env": c.env,
         }
         for name, c in all_cfgs.items()
     }
@@ -595,6 +677,11 @@ def ask_connection_config() -> ConnectionConfig:
     base = cfg_env or ConnectionConfig()
 
     name = input_with_default("Connection name", base.name)
+
+    env_completer = WordCompleter(["development", "staging", "production"], ignore_case=True)
+    env = input_with_default("Environment (development/staging/production)", base.env, completer=env_completer).lower()
+    if env not in ("development", "staging", "production"):
+        env = "development"
     
     db_type_completer = WordCompleter(["postgres", "mysql", "sqlite", "mongodb", "clickhouse"], ignore_case=True)
     db_type = input_with_default("Database type (postgres/mysql/sqlite/mongodb/clickhouse)", base.db_type, completer=db_type_completer).lower()
@@ -611,6 +698,7 @@ def ask_connection_config() -> ConnectionConfig:
             dbname=dbname,
             user="",
             password="",
+            env=env,
         )
     else:
         host = input_with_default("Host", base.host)
@@ -627,6 +715,7 @@ def ask_connection_config() -> ConnectionConfig:
             dbname=dbname,
             user=user,
             password=password,
+            env=env,
         )
 
 
