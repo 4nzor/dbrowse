@@ -12,7 +12,7 @@ from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.mouse_events import MouseButton, MouseEventType
-from prompt_toolkit.styles import Style
+from prompt_toolkit.styles import Style, DynamicStyle, merge_styles
 from pygments.lexers.sql import SqlLexer
 from psycopg2.extensions import connection as PGConnection
 from pymysql.connections import Connection as MySQLConnection
@@ -1028,7 +1028,6 @@ def browse_connections_ui_once() -> str:
                 load_rows_for_table()
                 event.app.invalidate()
                 return
-                return
             elif event.app.layout.has_focus(order_by_buffer_window):
                 # Очистить ORDER BY
                 schema, table, _size = tables[selected_table_idx] if tables and selected_table_idx >= 0 else (None, None, 0)
@@ -1601,19 +1600,18 @@ def browse_connections_ui_once() -> str:
         wrap_lines=True,
     )
     
-    def get_root_style():
+    def get_dynamic_style():
         cfg = connections[active_conn_idx] if active_conn_idx >= 0 else None
         if cfg and cfg.env == "production":
-            return "class:production-border"
-        return ""
+            return Style.from_dict({"window": "fg:red", "border": "fg:red"})
+        return Style.from_dict({})
 
     app = Application(
         layout=Layout(HSplit([root_container, status_window])),
         key_bindings=kb,
         full_screen=True,
-        style=style,
+        style=merge_styles([style, DynamicStyle(get_dynamic_style)]),
         mouse_support=True,
-        get_style=get_root_style,
     )
     try:
         result = app.run()
