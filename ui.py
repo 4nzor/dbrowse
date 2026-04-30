@@ -9,7 +9,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.application import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import HSplit, Layout, VSplit, Window, ScrollablePane
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.mouse_events import MouseButton, MouseEventType
@@ -52,6 +52,8 @@ style = Style.from_dict(
         "env-staging": "fg:black bg:yellow bold",
         "env-development": "fg:white bg:green bold",
         "production-border": "fg:red",
+        "search-match": "fg:black bg:yellow",
+        "selected-row": "reverse",
     }
 )
 
@@ -508,9 +510,9 @@ def browse_connections_ui_once() -> str:
             prefix = "➤ " if i == selected_table_idx else "  "
             # Для MongoDB schema пустой, показываем только имя коллекции
             if schema:
-                label = f"{schema}.{name} ({format_size(size_bytes)})"
+                full_name = f"{schema}.{name}"
             else:
-                label = f"{name} ({format_size(size_bytes)})"
+                full_name = name
 
             # Цветовая индикация размера: большие таблицы выделяем
             style_name = "reverse" if (active_column == 1 and i == selected_table_idx) else ""
@@ -523,7 +525,30 @@ def browse_connections_ui_once() -> str:
             else:
                 size_style = style_name
 
-            result.append((size_style, f"{prefix}{label}\n"))
+            # Подсветка совпадений поиска
+            if table_search_filter and table_search_filter.lower() in full_name.lower():
+                # Split the name into parts: before match, match, after match
+                parts = []
+                last_end = 0
+                search_term = table_search_filter.lower()
+                for match in re.finditer(re.escape(search_term), full_name.lower()):
+                    start_m, end_m = match.span()
+                    # Part before
+                    if start_m > last_end:
+                        parts.append((size_style, full_name[last_end:start_m]))
+                    # Match
+                    parts.append(("class:search-match", full_name[start_m:end_m]))
+                    last_end = end_m
+                # Last part
+                if last_end < len(full_name):
+                    parts.append((size_style, full_name[last_end:]))
+
+                result.append((size_style, prefix))
+                result.extend(parts)
+                result.append((size_style, f" ({format_size(size_bytes)})\n"))
+            else:
+                label = f"{full_name} ({format_size(size_bytes)})"
+                result.append((size_style, f"{prefix}{label}\n"))
             table_line_map.append(i)
 
             # Table details (columns and indexes) below it, if loaded
@@ -658,13 +683,30 @@ def browse_connections_ui_once() -> str:
             h[:max_cell_width] + "..." if len(h) > max_cell_width else h for h in headers
         ]
 
+        # Render table using termtables but handle line highlighting
         table_str = tt.to_string(
             table_data,
             header=headers_clean,
             style=tt.styles.thin_thick,
         )
-        for line in table_str.splitlines():
-            result.append(("", line + "\n"))
+
+        # Calculate row mapping (considering dividers in thin_thick style)
+        # thin_thick style:
+        # row 0: top border
+        # row 1: headers
+        # row 2: header divider
+        # row 3: first row of data
+        # row 4: row divider
+        lines = table_str.splitlines()
+        for i, line in enumerate(lines):
+            line_style = ""
+            # If this is a data row and it's the last clicked row
+            if i >= 3 and (i - 3) % 2 == 0:
+                row_idx = (i - 3) // 2
+                if row_idx == last_clicked_row_idx and active_column == 2:
+                    line_style = "class:selected-row"
+
+            result.append((line_style, line + "\n"))
 
         # Показываем статистику таблицы внизу
         if total_rows_count > 0:
@@ -1670,8 +1712,18 @@ def browse_connections_ui_once() -> str:
                 else:
                     value = str(row)
 
+                # Mask passwords or sensitive data in status message
+                display_value = value
+                col_name = columns[col_idx].lower()
+                if any(x in col_name for x in ["pass", "secret", "token", "key"]):
+                    display_value = "********"
+
                 pyperclip.copy(value)
-                push_status(f"✓ Copied: {value[:50]}{'...' if len(value) > 50 else ''}")
+                push_status(
+                    _("copied").format(
+                        value=f"{display_value[:50]}{'...' if len(display_value) > 50 else ''}"
+                    )
+                )
         except Exception as e:
             push_status(f"Copy error: {e}")
 

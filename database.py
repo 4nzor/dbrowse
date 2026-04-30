@@ -145,7 +145,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
         """
 
     def quote_identifier(self, name: str) -> str:
-        return f'"{name}"'
+        return f'"{name.replace('"', '""')}"'
 
     def get_default_schema(self) -> str:
         return "public"
@@ -266,7 +266,7 @@ class MySQLAdapter(DatabaseAdapter):
         """
 
     def quote_identifier(self, name: str) -> str:
-        return f"`{name}`"
+        return f"`{name.replace('`', '``')}`"
 
     def get_default_schema(self) -> str:
         return ""
@@ -379,7 +379,7 @@ class SQLiteAdapter(DatabaseAdapter):
         """
 
     def quote_identifier(self, name: str) -> str:
-        return f'"{name}"'
+        return f'"{name.replace('"', '""')}"'
 
     def get_default_schema(self) -> str:
         return "main"
@@ -692,7 +692,7 @@ class ClickHouseAdapter(DatabaseAdapter):
         """
 
     def quote_identifier(self, name: str) -> str:
-        return f"`{name}`"
+        return f"`{name.replace('`', '``')}`"
 
     def get_default_schema(self) -> str:
         return ""
@@ -821,6 +821,12 @@ def load_saved_connections() -> Dict[str, ConnectionConfig]:
 
 def save_connection_config(cfg: ConnectionConfig) -> None:
     ensure_config_dir()
+    # Ensure connections file has restricted permissions if it doesn't exist
+    if not CONNECTIONS_FILE.exists():
+        CONNECTIONS_FILE.touch(mode=0o600)
+    else:
+        os.chmod(CONNECTIONS_FILE, 0o600)
+
     all_cfgs = load_saved_connections()
     all_cfgs[cfg.name] = cfg
     serializable = {
