@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from translations import _
 import psycopg2
 from psycopg2.extensions import connection as PGConnection
 import pymysql
@@ -19,47 +20,49 @@ CONNECTIONS_FILE = CONFIG_DIR / "connections.json"
 
 class DatabaseAdapter(ABC):
     """Абстракция для работы с разными БД."""
-    
+
     @abstractmethod
     def connect(self, cfg: ConnectionConfig) -> Any:
         """Подключиться к БД."""
         pass
-    
+
     @abstractmethod
     def close(self, conn: Any) -> None:
         """Закрыть подключение."""
         pass
-    
+
     @abstractmethod
     def execute(self, conn: Any, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
         """Выполнить запрос и вернуть все строки."""
         pass
-    
+
     @abstractmethod
-    def execute_with_description(self, conn: Any, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+    def execute_with_description(
+        self, conn: Any, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         """Выполнить запрос и вернуть строки и описание колонок."""
         pass
-    
+
     @abstractmethod
     def get_tables_query(self, schema: str = "public") -> str:
         """SQL запрос для получения списка таблиц с размерами."""
         pass
-    
+
     @abstractmethod
     def get_table_details_columns_query(self) -> str:
         """SQL запрос для получения колонок таблицы."""
         pass
-    
+
     @abstractmethod
     def get_table_details_indexes_query(self) -> str:
         """SQL запрос для получения индексов таблицы."""
         pass
-    
+
     @abstractmethod
     def quote_identifier(self, name: str) -> str:
         """Заключить идентификатор в кавычки."""
         pass
-    
+
     @abstractmethod
     def get_default_schema(self) -> str:
         """Получить схему по умолчанию."""
@@ -70,28 +73,49 @@ class DatabaseAdapter(ABC):
         """SQL запрос для получения статистики по колонке."""
         pass
 
+    @abstractmethod
+    def update_row(
+        self,
+        conn: Any,
+        schema: str,
+        table: str,
+        where_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+    ) -> None:
+        """Обновить строку в БД."""
+        pass
+
+    @abstractmethod
+    def delete_row(self, conn: Any, schema: str, table: str, where_data: Dict[str, Any]) -> None:
+        """Удалить строку из БД."""
+        pass
+
 
 class PostgreSQLAdapter(DatabaseAdapter):
     def connect(self, cfg: ConnectionConfig) -> PGConnection:
         conn = psycopg2.connect(cfg.dsn())
         conn.autocommit = True
         return conn
-    
+
     def close(self, conn: PGConnection) -> None:
         conn.close()
-    
-    def execute(self, conn: PGConnection, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
+
+    def execute(
+        self, conn: PGConnection, query: str, params: Optional[Sequence] = None
+    ) -> List[Tuple]:
         with conn.cursor() as cur:
             cur.execute(query, params or ())
             return list(cur.fetchall())
-    
-    def execute_with_description(self, conn: PGConnection, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def execute_with_description(
+        self, conn: PGConnection, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         with conn.cursor() as cur:
             cur.execute(query, params or ())
             rows = list(cur.fetchall())
             columns = [desc[0] for desc in cur.description] if cur.description else []
             return rows, columns
-    
+
     def get_tables_query(self, schema: str = "public") -> str:
         return """
             SELECT n.nspname AS table_schema,
@@ -103,7 +127,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
               AND n.nspname = %s
             ORDER BY total_size DESC, table_name
         """
-    
+
     def get_table_details_columns_query(self) -> str:
         return """
             SELECT column_name, data_type
@@ -111,7 +135,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
             WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position
         """
-    
+
     def get_table_details_indexes_query(self) -> str:
         return """
             SELECT indexname, indexdef
@@ -119,10 +143,10 @@ class PostgreSQLAdapter(DatabaseAdapter):
             WHERE schemaname = %s AND tablename = %s
             ORDER BY indexname
         """
-    
+
     def quote_identifier(self, name: str) -> str:
-        return f'"{name}"'
-    
+        return f'"{name.replace('"', '""')}"'
+
     def get_default_schema(self) -> str:
         return "public"
 
@@ -139,6 +163,48 @@ class PostgreSQLAdapter(DatabaseAdapter):
             LIMIT {limit}
         """
 
+    def update_row(
+        self,
+        conn: PGConnection,
+        schema: str,
+        table: str,
+        where_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+    ) -> None:
+        schema_q = self.quote_identifier(schema)
+        table_q = self.quote_identifier(table)
+
+        set_parts = []
+        params = []
+        for k, v in new_data.items():
+            set_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        where_parts = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        query = f"UPDATE {schema_q}.{table_q} SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+
+    def delete_row(
+        self, conn: PGConnection, schema: str, table: str, where_data: Dict[str, Any]
+    ) -> None:
+        schema_q = self.quote_identifier(schema)
+        table_q = self.quote_identifier(table)
+
+        where_parts = []
+        params = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        query = f"DELETE FROM {schema_q}.{table_q} WHERE {' AND '.join(where_parts)}"
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+
 
 class MySQLAdapter(DatabaseAdapter):
     def connect(self, cfg: ConnectionConfig) -> MySQLConnection:
@@ -151,22 +217,26 @@ class MySQLAdapter(DatabaseAdapter):
             autocommit=True,
         )
         return conn
-    
+
     def close(self, conn: MySQLConnection) -> None:
         conn.close()
-    
-    def execute(self, conn: MySQLConnection, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
+
+    def execute(
+        self, conn: MySQLConnection, query: str, params: Optional[Sequence] = None
+    ) -> List[Tuple]:
         with conn.cursor() as cur:
             cur.execute(query, params or ())
             return list(cur.fetchall())
-    
-    def execute_with_description(self, conn: MySQLConnection, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def execute_with_description(
+        self, conn: MySQLConnection, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         with conn.cursor() as cur:
             cur.execute(query, params or ())
             rows = list(cur.fetchall())
             columns = [desc[0] for desc in cur.description] if cur.description else []
             return rows, columns
-    
+
     def get_tables_query(self, schema: str = "") -> str:
         # MySQL всегда использует текущую базу данных
         return """
@@ -177,7 +247,7 @@ class MySQLAdapter(DatabaseAdapter):
               AND table_type = 'BASE TABLE'
             ORDER BY total_size DESC, table_name
         """
-    
+
     def get_table_details_columns_query(self) -> str:
         return """
             SELECT column_name, data_type
@@ -185,7 +255,7 @@ class MySQLAdapter(DatabaseAdapter):
             WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position
         """
-    
+
     def get_table_details_indexes_query(self) -> str:
         # Упрощенный запрос для индексов MySQL
         return """
@@ -194,10 +264,10 @@ class MySQLAdapter(DatabaseAdapter):
             WHERE table_schema = %s AND table_name = %s
             ORDER BY index_name
         """
-    
+
     def quote_identifier(self, name: str) -> str:
-        return f"`{name}`"
-    
+        return f"`{name.replace('`', '``')}`"
+
     def get_default_schema(self) -> str:
         return ""
 
@@ -213,24 +283,68 @@ class MySQLAdapter(DatabaseAdapter):
             LIMIT {limit}
         """
 
+    def update_row(
+        self,
+        conn: MySQLConnection,
+        schema: str,
+        table: str,
+        where_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+    ) -> None:
+        table_q = self.quote_identifier(table)
+
+        set_parts = []
+        params = []
+        for k, v in new_data.items():
+            set_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        where_parts = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        query = f"UPDATE {table_q} SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+
+    def delete_row(
+        self, conn: MySQLConnection, schema: str, table: str, where_data: Dict[str, Any]
+    ) -> None:
+        table_q = self.quote_identifier(table)
+
+        where_parts = []
+        params = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = %s")
+            params.append(v)
+
+        query = f"DELETE FROM {table_q} WHERE {' AND '.join(where_parts)}"
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+
 
 class SQLiteAdapter(DatabaseAdapter):
     def connect(self, cfg: ConnectionConfig) -> sqlite3.Connection:
         conn = sqlite3.connect(cfg.dbname)
         conn.row_factory = sqlite3.Row
         return conn
-    
+
     def close(self, conn: sqlite3.Connection) -> None:
         conn.close()
-    
-    def execute(self, conn: sqlite3.Connection, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
+
+    def execute(
+        self, conn: sqlite3.Connection, query: str, params: Optional[Sequence] = None
+    ) -> List[Tuple]:
         cur = conn.cursor()
         cur.execute(query, params or ())
         rows = cur.fetchall()
         cur.close()
         return [tuple(row) for row in rows]
-    
-    def execute_with_description(self, conn: sqlite3.Connection, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def execute_with_description(
+        self, conn: sqlite3.Connection, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         cur = conn.cursor()
         cur.execute(query, params or ())
         rows = cur.fetchall()
@@ -238,7 +352,7 @@ class SQLiteAdapter(DatabaseAdapter):
         result = [tuple(row) for row in rows]
         cur.close()
         return result, columns
-    
+
     def get_tables_query(self, schema: str = "") -> str:
         # В SQLite сложно получить размер каждой таблицы отдельно без расширений (dbstat).
         # По умолчанию возвращаем 0, чтобы не вводить в заблуждение общим размером БД.
@@ -248,14 +362,14 @@ class SQLiteAdapter(DatabaseAdapter):
             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             ORDER BY name
         """
-    
+
     def get_table_details_columns_query(self) -> str:
         return """
             SELECT name AS column_name, type AS data_type
             FROM pragma_table_info(?)
             ORDER BY cid
         """
-    
+
     def get_table_details_indexes_query(self) -> str:
         return """
             SELECT name AS indexname, sql AS indexdef
@@ -263,10 +377,10 @@ class SQLiteAdapter(DatabaseAdapter):
             WHERE type = 'index' AND tbl_name = ?
             ORDER BY name
         """
-    
+
     def quote_identifier(self, name: str) -> str:
-        return f'"{name}"'
-    
+        return f'"{name.replace('"', '""')}"'
+
     def get_default_schema(self) -> str:
         return "main"
 
@@ -282,60 +396,122 @@ class SQLiteAdapter(DatabaseAdapter):
             LIMIT {limit}
         """
 
+    def update_row(
+        self,
+        conn: sqlite3.Connection,
+        schema: str,
+        table: str,
+        where_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+    ) -> None:
+        table_q = self.quote_identifier(table)
+
+        set_parts = []
+        params = []
+        for k, v in new_data.items():
+            set_parts.append(f"{self.quote_identifier(k)} = ?")
+            params.append(v)
+
+        where_parts = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = ?")
+            params.append(v)
+
+        query = f"UPDATE {table_q} SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+        conn.execute(query, params)
+        conn.commit()
+
+    def delete_row(
+        self, conn: sqlite3.Connection, schema: str, table: str, where_data: Dict[str, Any]
+    ) -> None:
+        table_q = self.quote_identifier(table)
+
+        where_parts = []
+        params = []
+        for k, v in where_data.items():
+            where_parts.append(f"{self.quote_identifier(k)} = ?")
+            params.append(v)
+
+        query = f"DELETE FROM {table_q} WHERE {' AND '.join(where_parts)}"
+        conn.execute(query, params)
+        conn.commit()
+
 
 class MongoDBAdapter(DatabaseAdapter):
     """Адаптер для MongoDB (NoSQL)."""
-    
+
     def connect(self, cfg: ConnectionConfig):
         try:
             from pymongo import MongoClient
         except ImportError:
             raise ImportError("pymongo не установлен. Установите: pip install pymongo")
-        
+
         if cfg.user and cfg.password:
             uri = f"mongodb://{cfg.user}:{cfg.password}@{cfg.host}:{cfg.port}/{cfg.dbname}"
         else:
             uri = f"mongodb://{cfg.host}:{cfg.port}/{cfg.dbname}"
-        
+
         client = MongoClient(uri)
         return client
-    
+
     def close(self, conn) -> None:
         conn.close()
-    
+
     def execute(self, conn, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
         # Для MongoDB query - это JSON строка с фильтром
         # В данном контексте не используется напрямую
         return []
-    
-    def execute_with_description(self, conn, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def execute_with_description(
+        self, conn, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         # Для MongoDB query - это JSON строка с фильтром
         # В данном контексте не используется напрямую
         return [], []
-    
+
     def get_tables_query(self, schema: str = "") -> str:
         # MongoDB не использует SQL, возвращаем пустую строку
         # Список коллекций получаем через специальный метод
         return ""
-    
+
     def get_table_details_columns_query(self) -> str:
         # MongoDB не использует SQL
         return ""
-    
+
     def get_table_details_indexes_query(self) -> str:
         # MongoDB не использует SQL
         return ""
-    
+
     def quote_identifier(self, name: str) -> str:
         return name
-    
+
     def get_default_schema(self) -> str:
         return ""
-    
+
     def get_column_stats_query(self, schema: str, table: str, column: str, limit: int = 10) -> str:
         return ""
 
-    def get_column_stats(self, conn, dbname: str, collection: str, column: str, limit: int = 10) -> List[Tuple]:
+    def update_row(
+        self, conn, schema: str, table: str, where_data: Dict[str, Any], new_data: Dict[str, Any]
+    ) -> None:
+        try:
+            db = conn[schema] if schema else conn.get_default_database()
+            coll = db[table]
+            coll.update_one(where_data, {"$set": new_data})
+        except Exception as e:
+            raise e
+
+    def delete_row(self, conn, schema: str, table: str, where_data: Dict[str, Any]) -> None:
+        try:
+            db = conn[schema] if schema else conn.get_default_database()
+            coll = db[table]
+            coll.delete_one(where_data)
+        except Exception as e:
+            raise e
+
+    def get_column_stats(
+        self, conn, dbname: str, collection: str, column: str, limit: int = 10
+    ) -> List[Tuple]:
         """Получить статистику по полю MongoDB."""
         try:
             db = conn[dbname]
@@ -343,15 +519,15 @@ class MongoDBAdapter(DatabaseAdapter):
             pipeline = [
                 {"$group": {"_id": f"${column}", "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}},
-                {"$limit": limit}
+                {"$limit": limit},
             ]
             results = list(coll.aggregate(pipeline))
 
             total = coll.count_documents({})
             stats = []
             for r in results:
-                percentage = round(r['count'] * 100.0 / total, 2) if total > 0 else 0
-                stats.append((str(r['_id']), r['count'], percentage))
+                percentage = round(r["count"] * 100.0 / total, 2) if total > 0 else 0
+                stats.append((str(r["_id"]), r["count"], percentage))
             return stats
         except:
             return []
@@ -368,15 +544,24 @@ class MongoDBAdapter(DatabaseAdapter):
             return sorted(collections, key=lambda x: x[2], reverse=True)
         except Exception as e:
             return []
-    
-    def get_collection_sample(self, conn, dbname: str, collection: str, limit: int = 10, offset: int = 0, filter_query: Optional[str] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def get_collection_sample(
+        self,
+        conn,
+        dbname: str,
+        collection: str,
+        limit: int = 10,
+        offset: int = 0,
+        filter_query: Optional[str] = None,
+    ) -> Tuple[List[Tuple], List[str]]:
         """Получить образцы документов из коллекции."""
         try:
             db = conn[dbname]
             coll = db[collection]
-            
+
             # Парсим фильтр если есть
             import json
+
             filter_dict = {}
             if filter_query and filter_query.strip():
                 try:
@@ -384,24 +569,24 @@ class MongoDBAdapter(DatabaseAdapter):
                 except:
                     # Если не JSON, пытаемся как простой фильтр
                     pass
-            
+
             # Получаем документы
             cursor = coll.find(filter_dict).skip(offset).limit(limit)
             docs = list(cursor)
-            
+
             if not docs:
                 return [], []
-            
+
             # Извлекаем все возможные ключи из документов
             all_keys = set()
             for doc in docs:
                 all_keys.update(doc.keys())
-            
+
             # Убираем _id из списка колонок для отображения (он всегда есть)
             columns = [k for k in sorted(all_keys) if k != "_id"]
             if "_id" in all_keys:
                 columns.insert(0, "_id")
-            
+
             # Преобразуем документы в строки
             rows = []
             for doc in docs:
@@ -415,7 +600,7 @@ class MongoDBAdapter(DatabaseAdapter):
                     else:
                         row.append(str(val))
                 rows.append(tuple(row))
-            
+
             return rows, columns
         except Exception as e:
             return [], []
@@ -423,13 +608,15 @@ class MongoDBAdapter(DatabaseAdapter):
 
 class ClickHouseAdapter(DatabaseAdapter):
     """Адаптер для ClickHouse."""
-    
+
     def connect(self, cfg: ConnectionConfig):
         try:
             from clickhouse_driver import Client
         except ImportError:
-            raise ImportError("clickhouse-driver не установлен. Установите: pip install clickhouse-driver")
-        
+            raise ImportError(
+                "clickhouse-driver не установлен. Установите: pip install clickhouse-driver"
+            )
+
         client = Client(
             host=cfg.host,
             port=cfg.port,
@@ -438,23 +625,25 @@ class ClickHouseAdapter(DatabaseAdapter):
             database=cfg.dbname or "default",
         )
         return client
-    
+
     def close(self, conn) -> None:
         conn.disconnect()
-    
+
     def execute(self, conn, query: str, params: Optional[Sequence] = None) -> List[Tuple]:
         result = conn.execute(query, params or ())
         return [tuple(row) for row in result]
-    
-    def execute_with_description(self, conn, query: str, params: Optional[Sequence] = None) -> Tuple[List[Tuple], List[str]]:
+
+    def execute_with_description(
+        self, conn, query: str, params: Optional[Sequence] = None
+    ) -> Tuple[List[Tuple], List[str]]:
         result = conn.execute(query, params or ())
         rows = [tuple(row) for row in result]
-        
+
         # Получаем колонки из результата
         columns = []
-        if hasattr(result, 'column_names'):
+        if hasattr(result, "column_names"):
             columns = result.column_names
-        elif hasattr(conn, 'last_query'):
+        elif hasattr(conn, "last_query"):
             # Пытаемся получить через метаданные
             try:
                 # Для ClickHouse можно использовать DESCRIBE или получить из результата
@@ -463,15 +652,15 @@ class ClickHouseAdapter(DatabaseAdapter):
                     columns = [f"col_{i+1}" for i in range(len(rows[0]))]
             except:
                 pass
-        
+
         # Если не получили колонки, используем индексы
         if not columns and rows:
             columns = [f"col_{i+1}" for i in range(len(rows[0]))]
         elif not columns:
             columns = []
-        
+
         return rows, columns
-    
+
     def get_tables_query(self, schema: str = "") -> str:
         # ClickHouse использует базы данных вместо схем
         # Используем параметр для database
@@ -484,7 +673,7 @@ class ClickHouseAdapter(DatabaseAdapter):
             WHERE database = %s
             ORDER BY total_size DESC, table_name
         """
-    
+
     def get_table_details_columns_query(self) -> str:
         return """
             SELECT name AS column_name, type AS data_type
@@ -492,7 +681,7 @@ class ClickHouseAdapter(DatabaseAdapter):
             WHERE database = %s AND table = %s
             ORDER BY position
         """
-    
+
     def get_table_details_indexes_query(self) -> str:
         # ClickHouse не имеет традиционных индексов, но есть проекции и материализованные представления
         return """
@@ -501,10 +690,10 @@ class ClickHouseAdapter(DatabaseAdapter):
             WHERE database = %s AND table = %s
             ORDER BY name
         """
-    
+
     def quote_identifier(self, name: str) -> str:
-        return f"`{name}`"
-    
+        return f"`{name.replace('`', '``')}`"
+
     def get_default_schema(self) -> str:
         return ""
 
@@ -519,6 +708,44 @@ class ClickHouseAdapter(DatabaseAdapter):
             ORDER BY count DESC
             LIMIT {limit}
         """
+
+    def update_row(
+        self, conn, schema: str, table: str, where_data: Dict[str, Any], new_data: Dict[str, Any]
+    ) -> None:
+        # ClickHouse UPDATE is asynchronous and uses ALTER TABLE ... UPDATE
+        table_q = self.quote_identifier(table)
+
+        set_parts = []
+        params = {}
+        for i, (k, v) in enumerate(new_data.items()):
+            param_name = f"set_{i}"
+            set_parts.append(f"{self.quote_identifier(k)} = %({param_name})s")
+            params[param_name] = v
+
+        where_parts = []
+        for i, (k, v) in enumerate(where_data.items()):
+            param_name = f"where_{i}"
+            where_parts.append(f"{self.quote_identifier(k)} = %({param_name})s")
+            params[param_name] = v
+
+        query = (
+            f"ALTER TABLE {table_q} UPDATE {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}"
+        )
+        conn.execute(query, params)
+
+    def delete_row(self, conn, schema: str, table: str, where_data: Dict[str, Any]) -> None:
+        # ClickHouse DELETE is asynchronous and uses ALTER TABLE ... DELETE
+        table_q = self.quote_identifier(table)
+
+        where_parts = []
+        params = {}
+        for i, (k, v) in enumerate(where_data.items()):
+            param_name = f"where_{i}"
+            where_parts.append(f"{self.quote_identifier(k)} = %({param_name})s")
+            params[param_name] = v
+
+        query = f"ALTER TABLE {table_q} DELETE WHERE {' AND '.join(where_parts)}"
+        conn.execute(query, params)
 
 
 def get_adapter(db_type: str) -> DatabaseAdapter:
@@ -555,7 +782,9 @@ class ConnectionConfig:
             return self.dbname
         elif self.db_type == "mongodb":
             if self.user and self.password:
-                return f"mongodb://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}"
+                return (
+                    f"mongodb://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}"
+                )
             return f"mongodb://{self.host}:{self.port}/{self.dbname}"
         return f"host={self.host} port={self.port} dbname={self.dbname} user={self.user} password={self.password}"
 
@@ -592,6 +821,12 @@ def load_saved_connections() -> Dict[str, ConnectionConfig]:
 
 def save_connection_config(cfg: ConnectionConfig) -> None:
     ensure_config_dir()
+    # Ensure connections file has restricted permissions if it doesn't exist
+    if not CONNECTIONS_FILE.exists():
+        CONNECTIONS_FILE.touch(mode=0o600)
+    else:
+        os.chmod(CONNECTIONS_FILE, 0o600)
+
     all_cfgs = load_saved_connections()
     all_cfgs[cfg.name] = cfg
     serializable = {
@@ -620,7 +855,7 @@ def configure_connection_from_env() -> Optional[ConnectionConfig]:
 
         parsed = up.urlparse(dsn_url)
         scheme = parsed.scheme.lower()
-        
+
         if scheme in ("postgresql", "postgres"):
             db_type = "postgres"
             default_port = 5432
@@ -646,11 +881,19 @@ def configure_connection_from_env() -> Optional[ConnectionConfig]:
             port = 0
             dbname = parsed.path.lstrip("/") or ""
         else:
-            user = parsed.username or ("postgres" if db_type == "postgres" else ("default" if db_type == "clickhouse" else ""))
+            user = parsed.username or (
+                "postgres"
+                if db_type == "postgres"
+                else ("default" if db_type == "clickhouse" else "")
+            )
             password = parsed.password or ""
             host = parsed.hostname or "localhost"
             port = parsed.port or default_port
-            dbname = parsed.path.lstrip("/") or ("postgres" if db_type == "postgres" else ("default" if db_type == "clickhouse" else ""))
+            dbname = parsed.path.lstrip("/") or (
+                "postgres"
+                if db_type == "postgres"
+                else ("default" if db_type == "clickhouse" else "")
+            )
 
         return ConnectionConfig(
             db_type=db_type,
@@ -679,15 +922,23 @@ def ask_connection_config() -> ConnectionConfig:
     name = input_with_default("Connection name", base.name)
 
     env_completer = WordCompleter(["development", "staging", "production"], ignore_case=True)
-    env = input_with_default("Environment (development/staging/production)", base.env, completer=env_completer).lower()
+    env = input_with_default(
+        "Environment (development/staging/production)", base.env, completer=env_completer
+    ).lower()
     if env not in ("development", "staging", "production"):
         env = "development"
-    
-    db_type_completer = WordCompleter(["postgres", "mysql", "sqlite", "mongodb", "clickhouse"], ignore_case=True)
-    db_type = input_with_default("Database type (postgres/mysql/sqlite/mongodb/clickhouse)", base.db_type, completer=db_type_completer).lower()
+
+    db_type_completer = WordCompleter(
+        ["postgres", "mysql", "sqlite", "mongodb", "clickhouse"], ignore_case=True
+    )
+    db_type = input_with_default(
+        "Database type (postgres/mysql/sqlite/mongodb/clickhouse)",
+        base.db_type,
+        completer=db_type_completer,
+    ).lower()
     if db_type not in ("postgres", "mysql", "sqlite", "mongodb", "clickhouse"):
         db_type = "postgres"
-    
+
     if db_type == "sqlite":
         dbname = input_with_default("Database file path", base.dbname)
         return ConnectionConfig(
@@ -721,15 +972,18 @@ def ask_connection_config() -> ConnectionConfig:
 
 def connect(cfg: ConnectionConfig) -> Any:
     from utils import push_status
-    
+
     adapter = get_adapter(cfg.db_type)
     if cfg.db_type == "sqlite":
-        push_status(f"Connecting to {cfg.name} ({cfg.dbname})...")
+        push_status(_("connecting").format(name=cfg.name, detail=cfg.dbname))
     elif cfg.db_type == "mongodb":
-        push_status(f"Connecting to {cfg.name} (mongodb://{cfg.host}:{cfg.port}/{cfg.dbname})...")
+        push_status(
+            _("connecting").format(
+                name=cfg.name, detail=f"mongodb://{cfg.host}:{cfg.port}/{cfg.dbname}"
+            )
+        )
     else:
-        push_status(f"Connecting to {cfg.name} ({cfg.user}@{cfg.host})...")
+        push_status(_("connecting").format(name=cfg.name, detail=f"{cfg.user}@{cfg.host}"))
     conn = adapter.connect(cfg)
-    push_status(f"Successfully connected to {cfg.name}.")
+    push_status(_("connected_successfully").format(name=cfg.name))
     return conn
-

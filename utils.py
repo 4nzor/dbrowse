@@ -64,4 +64,3 @@ def format_size(num_bytes: int) -> str:
             return f"{num:.1f} {unit}"
         num /= 1024
     return f"{int(num)} B"
-
